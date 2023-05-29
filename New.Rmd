@@ -1,0 +1,317 @@
+---
+title: "Performance experiment analysis"
+author: "Robin Weissmann Farbos"
+date: "2023-05-25"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=TRUE, warning=FALSE)
+```
+
+Data that we are here analyzing are non continuous proportion, which means that they are not normaly distributed. Moreover, there are several random factors due to the experimental design which are affecting variability in the data, and we aim to distinguish their effect from the effect of fixed factors in which we are interested. Therefore, we are using global linear mixed models which afford us to cope with these issues. 
+
+Data are usually represented in a first place. Then we construct two different model: one with biotypes and host plant status as fixed effect, and a second in which interaction between the two is added. If both of them, genotype and temporal block were added as random factors. We also put an observational-level random factor in order to deal with overdispersion, as it is known to distort statistical parameters and thus impact result of tests. We still checked for overdispersion with overdisp_fun function, written by one of the author of lme4 package. We then carried out an anova with the two model, and we kept only the one who best fitted the data choosing the smallest AIC. As summary does not give relevant p-value when the model include fixed factors with more than two modalities, we used the function Anova of the car library, which basically carry out a Wald Z test on the different fixed factors of the model. Then, contrasts explaining significance were identify using a tukey test. 
+
+### Loading library 
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+
+library(readxl)
+library(Matrix)
+library(ggplot2)
+library(lme4)
+library(tidyr)
+library(car)
+library(multcomp)
+library(ggpubr)
+library(performance)
+
+```
+
+##### Importing function (written by Ben Bolker, author of lme4 package) to estiamte overdispersion in GLMMs : 
+
+```{r}
+
+# Function from Ben Bolker for knowing if there is any overdispersion in a model : 
+
+overdisp_fun <- function(model) {
+rdf <- df.residual(model)
+rp <- residuals(model,type="pearson")
+Pearson.chisq <- sum(rp^2)
+prat <- Pearson.chisq/rdf
+pval <- pchisq(Pearson.chisq, df=rdf, lower.tail=FALSE)
+c(chisq=Pearson.chisq,ratio=prat,rdf=rdf,p=pval)
+}
+
+```
+
+### Loading data, and treating data before analysis : 
+
+```{r}
+
+# Load raw data : 
+
+data <- read_xlsx("/Users/hsen6/Desktop/Stage_M1/Experiment/Experimental-design-documents/Performance-experiment/Results_mummies_exp1_11days.xlsx")
+
+
+# Transform data to appropriate class :
+
+data[c(1:8, 11, 13, 16)] <- lapply(data[c(1:8, 11, 13, 16)], as.factor)
+
+data[c(9:10, 14, 15, 17:19)] <- lapply(data[c(9:10, 14, 15, 17:19)], as.numeric)
+
+
+# Remove non-usable replicates : 
+
+data <- subset(data, data$Paraistoid_alive_after_exposure=="Yes")
+
+
+# Create variables of interest (indicators) : 
+
+data$mummification <- data$Mummies/(data$Mummies + data$Alive)
+
+data$total_mummification <- data$Mummies/data$Starting_number
+
+data$Combination <-with(data, interaction(Biotypes, Plant)) 
+
+data$hatching_rate <-(data$Females +data$Males)/data$Mummies
+
+data$hatched_individuals <- data$Males + data$Females
+
+data$sex_ratio <- data$Females/data$hatched_individuals #How to compute the sex ratio 
+
+
+# Separate data in two dataset, one for each parasitoid : 
+
+data_D <- subset(data, data$Parasitoid=="Aphidius")
+
+data_L <- subset(data, data$Parasitoid=="Aphelinus")
+
+
+# Creating an observation variable to include observational-level random effect in the model : 
+
+data_D$obs <- as.factor(1:98)
+
+```
+
+## Aphidius ervi analysis
+
+### Mummification :
+
+```{r}
+
+# Graph : 
+
+graph_mummification_D <- ggplot(data_D, aes(x=interaction(Plant, Biotypes), y=mummification, fill=Host_plant)) + 
+  geom_boxplot() + 
+  theme_gray() + 
+  geom_jitter(aes(colour=Genotype)) + 
+  scale_color_manual(breaks = c("C132","C159", "C74","200", "C218", "X302"), 
+                     values=c("#0000FF", "#26C4EC", "#22427C", "#FF866A","#FF0000","#A91101" )) +
+  scale_fill_manual("Host plant", breaks = c("Universal host (V.faba)", "Natural host"),
+                    values=c("#FEF86C", "#708D23")) + 
+  facet_grid(~Biotypes, switch = "x", scales = "free_x", space = "free_x")  +
+  theme(panel.spacing = unit(0, "lines"), strip.background = element_blank(),
+        strip.placement = "outside") + 
+  ylab("Mummification rate") + 
+  xlab("") +
+  scale_x_discrete(labels = c(Lotus.Lotus= "Natural host", Vicia.Lotus= "Universal host",
+                              Medicago.Medicago="Natural host", Vicia.Medicago="Universal host")) +
+  theme(axis.title=element_text(size=8,face="bold"))
+
+graph_mummification_D
+
+
+# GLMM model : 
+
+mummification_D <- cbind(data_D$Alive, data_D$Mummies) # Explanatory variable, corresponding to "mummification"
+
+## Comparing additive and interactive models: 
+
+additive_mummification_D <- glmer(mummification_D ~ Biotypes + Host_plant +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(additive_mummification_D) # Checking for overdispersion before testing
+
+interaction_mummification_D <-glmer(mummification_D ~ Biotypes*Host_plant +(1|Block) +(1|Genotype)+(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(interaction_mummification_D) # Checking for overdispersion before testing
+
+anova(additive_mummification_D, interaction_mummification_D) 
+
+## Keeping the best model and testing significance of the different explicative variables : 
+
+Anova(interaction_mummification_D) 
+
+interaction_mummification_D_2 <-glmer(mummification_D ~ Combination +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+tukey_mummification_D <-glht(interaction_mummification_D_2, linfct = mcp(Combination = "Tukey"))
+summary(tukey_mummification_D)
+
+```
+
+### Total mummification :
+
+```{r}
+
+# Graph : 
+
+graph_total_mummification_D <- ggplot(data_D, aes(x=interaction(Plant, Biotypes), y=total_mummification, 
+                      fill=Host_plant)) + 
+  geom_boxplot() + 
+  theme_gray() + 
+  geom_jitter(aes(colour=Genotype)) + 
+  scale_color_manual(breaks = c("C132","C159", "C74","200", "C218", "X302"), 
+                     values=c("#0000FF", "#26C4EC", "#22427C", "#FF866A","#FF0000","#A91101" )) +
+  scale_fill_manual("Host plant", breaks = c("Universal host (V.faba)", "Natural host"),
+                    values=c("#FEF86C", "#708D23")) + 
+  facet_grid(~Biotypes, switch = "x", scales = "free_x", space = "free_x")  +
+  theme(panel.spacing = unit(0, "lines"), strip.background = element_blank(),
+        strip.placement = "outside") + 
+  ylab("Total mummification rate") + 
+  xlab("") +
+  scale_x_discrete(labels = c(Lotus.Lotus= "Natural host", Vicia.Lotus= "Universal host",
+                              Medicago.Medicago="Natural host", Vicia.Medicago="Universal host")) +
+  theme(axis.title=element_text(size=8,face="bold"))
+
+graph_total_mummification_D
+
+
+# GLMM model : 
+
+tot_mummification_D <- cbind(data_D$Mummies, data_D$Starting_number) # Explanatory variable, corresponding to "mummification"
+
+## Comparing additive and interactive models: 
+
+additive_total_mummification_D <- glmer(tot_mummification_D ~ Biotypes + Host_plant +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(additive_total_mummification_D) # Checking for overdispersion before testing
+
+interaction_total_mummification_D <-glmer(tot_mummification_D ~ Biotypes*Host_plant +(1|Block) +(1|Genotype)+(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(interaction_total_mummification_D) # Checking for overdispersion before testing
+
+anova(additive_total_mummification_D, interaction_total_mummification_D) 
+
+## Keeping the best model and testing significance of the different explicative variables : 
+
+Anova(interaction_total_mummification_D) 
+
+interaction_total_mummification_D_2 <-glmer(tot_mummification_D ~ Combination +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+tukey_total_mummification_D <-glht(interaction_mummification_D_2, linfct = mcp(Combination = "Tukey"))
+summary(tukey_total_mummification_D)
+
+```
+
+### Hatching rate : 
+
+```{r}
+
+# Graph : 
+
+graph_hatching_D <- ggplot(data_D, aes(x=interaction(Plant, Biotypes), y=hatching_rate, 
+                      fill=Host_plant)) + 
+  geom_boxplot() + 
+  theme_gray() + 
+  geom_jitter(aes(colour=Genotype)) + 
+  scale_color_manual(breaks = c("C132","C159", "C74","200", "C218", "X302"), 
+                     values=c("#0000FF", "#26C4EC", "#22427C", "#FF866A","#FF0000","#A91101" )) +
+  scale_fill_manual("Host plant", breaks = c("Universal host (V.faba)", "Natural host"),
+                    values=c("#FEF86C", "#708D23")) + 
+  facet_grid(~Biotypes, switch = "x", scales = "free_x", space = "free_x")  +
+  theme(panel.spacing = unit(0, "lines"), strip.background = element_blank(),
+        strip.placement = "outside") + 
+  ylab("Hatching rate") + 
+  xlab("") +
+  scale_x_discrete(labels = c(Lotus.Lotus= "Natural host", Vicia.Lotus= "Universal host",
+                              Medicago.Medicago="Natural host", Vicia.Medicago="Universal host")) +
+  theme(axis.title=element_text(size=8,face="bold"))
+
+graph_hatching_D
+
+
+# GLMM model : 
+
+hatching_D <- cbind(data_D$Mummies, data_D$hatched_individuals) # Explanatory variable, corresponding to "mummification"
+
+## Comparing additive and interactive models: 
+
+additive_hatching_D <- glmer(hatching_D ~ Biotypes + Host_plant +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(additive_hatching_D) # Checking for overdispersion before testing
+
+interaction_hatching_D <-glmer(hatching_D ~ Biotypes*Host_plant +(1|Block) +(1|Genotype)+(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(interaction_hatching_D) # Checking for overdispersion before testing
+
+anova(additive_hatching_D, interaction_hatching_D) 
+
+## Keeping the best model and testing significance of the different explicative variables : 
+
+Anova(additive_hatching_D) 
+Anova(interaction_hatching_D) 
+
+
+```
+
+### Sex-ratio :
+
+```{r}
+
+# Graph : 
+
+graph_sex_ratio_D <- ggplot(data_D, aes(x=interaction(Plant, Biotypes), y=sex_ratio, 
+                      fill=Host_plant)) + 
+  geom_boxplot() + 
+  theme_gray() + 
+  geom_jitter(aes(colour=Genotype)) + 
+  scale_color_manual(breaks = c("C132","C159", "C74","200", "C218", "X302"), 
+                     values=c("#0000FF", "#26C4EC", "#22427C", "#FF866A","#FF0000","#A91101" )) +
+  scale_fill_manual("Host plant", breaks = c("Universal host (V.faba)", "Natural host"),
+                    values=c("#FEF86C", "#708D23")) + 
+  facet_grid(~Biotypes, switch = "x", scales = "free_x", space = "free_x")  +
+  theme(panel.spacing = unit(0, "lines"), strip.background = element_blank(),
+        strip.placement = "outside") + 
+  ylab("Female proportion") + 
+  xlab("") +
+  scale_x_discrete(labels = c(Lotus.Lotus= "Natural host", Vicia.Lotus= "Universal host",
+                              Medicago.Medicago="Natural host", Vicia.Medicago="Universal host")) +
+  theme(axis.title=element_text(size=8,face="bold"))
+
+graph_sex_ratio_D
+
+
+# GLMM model : 
+
+sex_ratio_D <- cbind(data_D$Females, data_D$hatched_individuals) # Explanatory variable, corresponding to "mummification"
+
+## Comparing additive and interactive models: 
+
+additive_sex_ratio_D <- glmer(sex_ratio_D ~ Biotypes + Host_plant +(1|Block) +(1|Genotype) +(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(additive_sex_ratio_D) # Checking for over-dispersion before testing
+
+interaction_sex_ratio_D <-glmer(sex_ratio_D ~ Biotypes*Host_plant +(1|Block) +(1|Genotype)+(1|obs), data= data_D, family=binomial)
+
+overdisp_fun(interaction_sex_ratio_D) # Checking for over-dispersion before testing
+
+anova(additive_sex_ratio_D, interaction_sex_ratio_D) 
+
+## Keeping the best model and testing significance of the different explicative variables : 
+
+Anova(additive_sex_ratio_D)
+Anova(interaction_sex_ratio_D)
+
+```
+
+### Put all the graph together : 
+
+```{r}
+
+ggarrange(graph_mummification_D, graph_total_mummification_D, graph_hatching_D, graph_sex_ratio_D, ncol=2, nrow=2, common.legend = TRUE, legend="bottom", labels ="AUTO")
+
+```
+
